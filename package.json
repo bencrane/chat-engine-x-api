@@ -1,0 +1,29 @@
+{
+  "name": "chat-engine-x-api",
+  "version": "0.2.0",
+  "description": "Standalone backend service for AI chat orchestration across multiple platforms",
+  "type": "module",
+  "main": "dist/index.js",
+  "scripts": {
+    "dev": "tsx watch src/index.ts",
+    "build": "tsc",
+    "start": "node dist/index.js",
+    "typecheck": "tsc --noEmit",
+    "test": "vitest run",
+    "test:watch": "vitest"
+  },
+  "dependencies": {
+    "@hono/node-server": "^1.13.8",
+    "@supabase/supabase-js": "^2.49.4",
+    "hono": "^4.7.6"
+  },
+  "devDependencies": {
+    "@types/node": "^22.13.14",
+    "tsx": "^4.19.3",
+    "typescript": "^5.8.2",
+    "vitest": "^3.1.1"
+  },
+  "engines": {
+    "node": ">=20"
+  }
+}
