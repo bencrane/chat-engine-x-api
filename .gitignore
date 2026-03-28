@@ -1,16 +1,12 @@
-# Python
-__pycache__/
-*.pyc
-*.pyo
-*.egg-info/
-dist/
-build/
-.eggs/
+# Dependencies
+node_modules/
 
-# Virtual environments
-.venv/
-venv/
-env/
+# Build output
+dist/
+
+# Local env (should not exist — use Doppler)
+.env
+.env.local
 
 # IDE
 .idea/
@@ -18,21 +14,12 @@ env/
 *.swp
 *.swo
 
-# Testing
-.pytest_cache/
-.coverage
-htmlcov/
-
-# Linting
-.ruff_cache/
-
-# Local env (should not exist — use Doppler)
-.env
-.env.local
-
 # OS
 .DS_Store
 Thumbs.db
+
+# Testing
+coverage/
 
 # Project specific
 .context/

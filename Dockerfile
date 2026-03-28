@@ -1,4 +1,18 @@
-FROM python:3.12-slim
+# --- Build stage ---
+FROM node:20-slim AS build
+
+WORKDIR /app
+
+COPY package.json package-lock.json* ./
+RUN npm ci
+
+COPY tsconfig.json ./
+COPY src/ ./src/
+
+RUN npm run build
+
+# --- Runtime stage ---
+FROM node:20-slim AS runtime
 
 WORKDIR /app
 
@@ -13,11 +27,11 @@ RUN apt-get update && apt-get install -y \
     && apt-get update && apt-get install -y doppler \
     && apt-get clean && rm -rf /var/lib/apt/lists/*
 
-COPY pyproject.toml .
-RUN pip install --no-cache-dir .
+COPY package.json package-lock.json* ./
+RUN npm ci --omit=dev
 
-COPY . .
+COPY --from=build /app/dist ./dist
 
 EXPOSE 8080
 
-CMD ["doppler", "run", "--", "uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "8080"]
+CMD ["doppler", "run", "--", "node", "dist/index.js"]

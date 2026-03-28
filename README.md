@@ -1,10 +1,11 @@
 # chat-engine-x-api
 
-Backend chat orchestration API
+Standalone backend service that centralizes AI chat orchestration across multiple platforms.
 
 ## Stack
 
-- **Runtime:** Python 3.12 + FastAPI
+- **Runtime:** Node.js 20 + TypeScript
+- **Framework:** Hono
 - **Database:** Supabase (Postgres)
 - **Secrets:** Doppler
 - **Deployment:** Railway (Docker)
@@ -12,36 +13,32 @@ Backend chat orchestration API
 ## Local Development
 
 ```bash
-# Install Doppler CLI (first time only)
-brew install dopplerhq/cli/doppler
-
-# Login and configure
-doppler login
-doppler setup  # Select this project + dev config
-
 # Install dependencies
-pip install -e ".[dev]"
+npm install
 
-# Run the server
-doppler run -- uvicorn app.main:app --reload --port 8080
+# Run the server (requires env vars — use Doppler or .env)
+doppler run -- npm run dev
 
-# Run tests
-doppler run -- pytest tests/ -v
+# Or with a local .env file
+npm run dev
 
-# Lint
-ruff check .
-ruff format .
+# Build for production
+npm run build
+
+# Run production build
+npm start
+
+# Type check
+npm run typecheck
 ```
 
 ## API Endpoints
 
 | Method | Path | Description |
 |--------|------|-------------|
-| GET | `/health` | Liveness check |
-| GET | `/health/live` | Liveness check |
-| GET | `/health/ready` | Readiness check |
-| GET | `/docs` | OpenAPI docs |
-| GET | `/redoc` | ReDoc docs |
+| GET | `/health` | Basic health check |
+| GET | `/health/live` | Liveness check (always 200) |
+| GET | `/health/ready` | Readiness check (verifies Supabase) |
 
 ## Deployment
 
@@ -52,45 +49,25 @@ Pushes to `main` auto-deploy via Railway.
 1. **Doppler:** Create project `chat-engine-x-api` with `prd` config containing all secrets
 2. **Railway:** Add `DOPPLER_TOKEN` env var (service token from Doppler)
 
-### Manual Deploy
-
-```bash
-git push origin main
-```
-
 ## Project Structure
 
 ```
 chat-engine-x-api/
-├── app/
-│   ├── main.py           # FastAPI app + routes
-│   ├── config.py         # Pydantic settings
-│   ├── dependencies.py   # DI factories
-│   ├── db/
-│   │   └── supabase.py   # DB client
-│   └── shared/
-│       ├── errors.py     # Exception classes
-│       ├── error_handlers.py
-│       ├── logging_config.py
-│       └── request_id.py
-├── tests/
+├── src/
+│   ├── index.ts              -- Hono app entrypoint
+│   ├── config.ts             -- Typed config from env vars
+│   ├── db.ts                 -- Supabase client singleton
+│   ├── logger.ts             -- Structured JSON logging
+│   ├── middleware/
+│   │   ├── cors.ts           -- CORS handling
+│   │   ├── error-handler.ts  -- Global error handler
+│   │   └── request-id.ts     -- Request ID generation
+│   └── routes/
+│       └── health.ts         -- Health check endpoints
+├── docs/
+│   └── PRD.md
 ├── Dockerfile
 ├── railway.toml
-└── pyproject.toml
-```
-
-## Adding a New Feature
-
-```bash
-mkdir -p app/my_feature
-touch app/my_feature/__init__.py
-touch app/my_feature/router.py
-touch app/my_feature/models.py
-```
-
-Register in `app/main.py`:
-
-```python
-from app.my_feature.router import router as my_feature_router
-app.include_router(my_feature_router, prefix="/my-feature", tags=["my_feature"])
+├── tsconfig.json
+└── .env.example
 ```
