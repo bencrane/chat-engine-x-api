@@ -15,7 +15,9 @@
   "dependencies": {
     "@hono/node-server": "^1.13.8",
     "@supabase/supabase-js": "^2.49.4",
-    "hono": "^4.7.6"
+    "@types/jsonwebtoken": "^9.0.10",
+    "hono": "^4.7.6",
+    "jsonwebtoken": "^9.0.3"
   },
   "devDependencies": {
     "@types/node": "^22.13.14",
