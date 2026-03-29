@@ -1,74 +1,101 @@
 // src/middleware/auth.ts — JWT validation middleware
-// Validates Bearer tokens, extracts claims, and builds ChatContext for downstream handlers.
+// Validates Bearer tokens against centralized auth service JWKS endpoint using EdDSA.
 
 import { createMiddleware } from "hono/factory";
-import jwt from "jsonwebtoken";
-import { config } from "../config.js";
-import { logger } from "../logger.js";
+import { createRemoteJWKSet, jwtVerify, errors, type JWTPayload } from "jose";
 
-export interface ChatContext {
+const AUTH_JWKS_URL = process.env.AUTH_JWKS_URL ?? "https://api.authengine.dev/api/auth/jwks";
+const AUTH_ISSUER = process.env.AUTH_ISSUER ?? "https://api.authengine.dev";
+const AUTH_AUDIENCE = process.env.AUTH_AUDIENCE ?? "https://api.authengine.dev";
+
+const JWKS = createRemoteJWKSet(new URL(AUTH_JWKS_URL));
+
+export interface AuthContext {
   userId: string;
   orgId: string;
+  role: string;
+  tokenType: "session" | "m2m";
   clientId: string | null;
-  platform: string;
-  email?: string;
 }
 
-interface JwtPayload {
-  sub: string;
+declare module "hono" {
+  interface ContextVariableMap {
+    auth: AuthContext;
+  }
+}
+
+interface EngineXJWTPayload extends JWTPayload {
   org_id?: string;
-  email?: string;
+  role?: string;
+  type?: string;
 }
 
 export const authMiddleware = createMiddleware(async (c, next) => {
-  // Extract Bearer token
   const authHeader = c.req.header("Authorization");
   if (!authHeader || !authHeader.startsWith("Bearer ")) {
-    return c.json({ error: "Missing or malformed Authorization header" }, 401);
+    return c.json(
+      { error: "unauthorized", message: "Missing or invalid authentication token" },
+      401
+    );
   }
 
   const token = authHeader.slice(7);
-  const secret = config.auth.jwtSecret;
 
-  if (!secret) {
-    logger.error("JWT_SECRET is not configured");
-    return c.json({ error: "Internal server error" }, 500);
-  }
-
-  // Validate JWT
-  let payload: JwtPayload;
+  let payload: EngineXJWTPayload;
   try {
-    payload = jwt.verify(token, secret, { algorithms: ["HS256"] }) as JwtPayload;
-  } catch {
-    return c.json({ error: "Invalid token" }, 401);
+    const result = await jwtVerify(token, JWKS, {
+      issuer: AUTH_ISSUER,
+      audience: AUTH_AUDIENCE,
+      algorithms: ["EdDSA"],
+    });
+    payload = result.payload as EngineXJWTPayload;
+  } catch (err: unknown) {
+    const message =
+      err instanceof errors.JWTExpired
+        ? "Token has expired"
+        : "Invalid or malformed token";
+    return c.json({ error: "unauthorized", message }, 401);
   }
 
   if (!payload.sub) {
-    return c.json({ error: "Invalid token" }, 401);
+    return c.json(
+      { error: "unauthorized", message: "Missing required claim: sub" },
+      401
+    );
+  }
+  if (!payload.org_id) {
+    return c.json(
+      { error: "unauthorized", message: "Missing required claim: org_id" },
+      401
+    );
+  }
+  if (!payload.role) {
+    return c.json(
+      { error: "unauthorized", message: "Missing required claim: role" },
+      401
+    );
   }
 
-  // Read platform-specific headers
-  const platform = c.req.header("X-Platform");
-  const orgId = c.req.header("X-Org-Id") || payload.org_id;
-  const clientId = c.req.header("X-Client-Id") || null;
-
-  if (!platform) {
-    return c.json({ error: "Missing required header: X-Platform" }, 400);
+  const tokenType = payload.type;
+  if (tokenType !== "session" && tokenType !== "m2m") {
+    return c.json(
+      { error: "unauthorized", message: `Unsupported token type: ${tokenType}` },
+      401
+    );
   }
 
-  if (!orgId) {
-    return c.json({ error: "Missing required header: X-Org-Id" }, 400);
-  }
+  // X-Client-Id is allowed from header (sub-tenant selector)
+  // X-Org-Id is NOT read from header — org comes from JWT only
+  const clientId = c.req.header("X-Client-Id") ?? null;
 
-  // Build ChatContext
-  const chatContext: ChatContext = {
+  const auth: AuthContext = {
     userId: payload.sub,
-    orgId,
+    orgId: payload.org_id,
+    role: payload.role,
+    tokenType: tokenType as "session" | "m2m",
     clientId,
-    platform,
-    email: payload.email,
   };
 
-  c.set("chatContext", chatContext);
+  c.set("auth", auth);
   await next();
 });

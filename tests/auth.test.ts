@@ -1,45 +1,76 @@
-import { describe, it, expect, vi, beforeEach } from "vitest";
+import { describe, it, expect, beforeEach, vi } from "vitest";
 import { Hono } from "hono";
-import jwt from "jsonwebtoken";
+import {
+  generateKeyPair,
+  exportJWK,
+  SignJWT,
+  createLocalJWKSet,
+  type KeyLike,
+} from "jose";
 
-const TEST_SECRET = "test-jwt-secret-key";
-
-// Mock config before importing auth middleware
-// Note: vi.mock is hoisted, so we inline the secret value
-vi.mock("../src/config.js", () => ({
-  config: {
-    auth: { jwtSecret: "test-jwt-secret-key" },
-  },
+// Shared ref for test keypair — populated by the hoisted mock factory
+const keyRef = vi.hoisted(() => ({
+  privateKey: null as KeyLike | null,
 }));
 
-vi.mock("../src/logger.js", () => ({
-  logger: {
-    debug: vi.fn(),
-    info: vi.fn(),
-    warn: vi.fn(),
-    error: vi.fn(),
-  },
-}));
+// vi.mock is hoisted; the async factory generates the keypair and returns a
+// patched jose where createRemoteJWKSet resolves to a local JWKS.
+vi.mock("jose", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("jose")>();
+  const keyPair = await actual.generateKeyPair("EdDSA");
+  keyRef.privateKey = keyPair.privateKey;
 
-import { authMiddleware, type ChatContext } from "../src/middleware/auth.js";
+  const jwk = await actual.exportJWK(keyPair.publicKey);
+  jwk.kid = "test-key-1";
+  jwk.alg = "EdDSA";
+  jwk.use = "sig";
+
+  const localJWKS = actual.createLocalJWKSet({ keys: [jwk] });
+
+  return {
+    ...actual,
+    createRemoteJWKSet: () => localJWKS,
+  };
+});
+
+// Set env vars before importing the middleware (reads them at module scope)
+process.env.AUTH_JWKS_URL = "https://api.authengine.dev/api/auth/jwks";
+process.env.AUTH_ISSUER = "https://api.authengine.dev";
+process.env.AUTH_AUDIENCE = "https://api.authengine.dev";
+
+const { authMiddleware } = await import("../src/middleware/auth.js");
+type AuthContext = import("../src/middleware/auth.js").AuthContext;
 
 function createApp() {
   const app = new Hono<{
-    Variables: { chatContext: ChatContext };
+    Variables: { auth: AuthContext };
   }>();
   app.use("*", authMiddleware);
   app.get("/test", (c) => {
-    const ctx = c.get("chatContext");
-    return c.json(ctx);
+    const auth = c.get("auth");
+    return c.json(auth);
   });
   return app;
 }
 
-function makeToken(
-  payload: Record<string, unknown>,
-  secret: string = TEST_SECRET
-): string {
-  return jwt.sign(payload, secret, { algorithm: "HS256" });
+async function makeToken(
+  claims: Record<string, unknown>,
+  options?: { key?: KeyLike; expiresIn?: string }
+): Promise<string> {
+  const key = options?.key ?? keyRef.privateKey!;
+  let builder = new SignJWT(claims)
+    .setProtectedHeader({ alg: "EdDSA", kid: "test-key-1" })
+    .setIssuer("https://api.authengine.dev")
+    .setAudience("https://api.authengine.dev")
+    .setIssuedAt();
+
+  if (options?.expiresIn) {
+    builder = builder.setExpirationTime(options.expiresIn);
+  } else {
+    builder = builder.setExpirationTime("1h");
+  }
+
+  return builder.sign(key);
 }
 
 describe("auth middleware", () => {
@@ -50,88 +81,98 @@ describe("auth middleware", () => {
   });
 
   it("returns 401 when Authorization header is missing", async () => {
-    const res = await app.request("/test", {
-      headers: {
-        "X-Platform": "paidedge",
-        "X-Org-Id": "org-1",
-      },
-    });
+    const res = await app.request("/test");
     expect(res.status).toBe(401);
     const body = await res.json();
-    expect(body.error).toMatch(/Authorization/i);
+    expect(body.error).toBe("unauthorized");
+    expect(body.message).toMatch(/Missing or invalid authentication token/);
   });
 
   it("returns 401 when Authorization header does not start with Bearer", async () => {
     const res = await app.request("/test", {
-      headers: {
-        Authorization: "Basic abc123",
-        "X-Platform": "paidedge",
-        "X-Org-Id": "org-1",
-      },
+      headers: { Authorization: "Basic abc123" },
     });
     expect(res.status).toBe(401);
+    const body = await res.json();
+    expect(body.error).toBe("unauthorized");
   });
 
   it("returns 401 for an invalid JWT", async () => {
     const res = await app.request("/test", {
-      headers: {
-        Authorization: "Bearer invalid.token.here",
-        "X-Platform": "paidedge",
-        "X-Org-Id": "org-1",
-      },
+      headers: { Authorization: "Bearer invalid.token.here" },
     });
     expect(res.status).toBe(401);
     const body = await res.json();
-    expect(body.error).toBe("Invalid token");
+    expect(body.message).toMatch(/Invalid or malformed token/);
   });
 
-  it("returns 401 for a JWT signed with the wrong secret", async () => {
-    const token = makeToken({ sub: "user-1" }, "wrong-secret");
+  it("returns 401 for a JWT signed with the wrong key", async () => {
+    const wrongKeyPair = await generateKeyPair("EdDSA");
+    const token = await makeToken(
+      { sub: "user-1", org_id: "org-1", role: "admin", type: "session" },
+      { key: wrongKeyPair.privateKey }
+    );
     const res = await app.request("/test", {
-      headers: {
-        Authorization: `Bearer ${token}`,
-        "X-Platform": "paidedge",
-        "X-Org-Id": "org-1",
-      },
+      headers: { Authorization: `Bearer ${token}` },
+    });
+    expect(res.status).toBe(401);
+  });
+
+  it("returns 401 when sub claim is missing", async () => {
+    const token = await makeToken({ org_id: "org-1", role: "admin", type: "session" });
+    const res = await app.request("/test", {
+      headers: { Authorization: `Bearer ${token}` },
     });
     expect(res.status).toBe(401);
     const body = await res.json();
-    expect(body.error).toBe("Invalid token");
+    expect(body.message).toMatch(/sub/);
   });
 
-  it("returns 400 when X-Platform header is missing", async () => {
-    const token = makeToken({ sub: "user-1" });
+  it("returns 401 when org_id claim is missing", async () => {
+    const token = await makeToken({ sub: "user-1", role: "admin", type: "session" });
     const res = await app.request("/test", {
-      headers: {
-        Authorization: `Bearer ${token}`,
-        "X-Org-Id": "org-1",
-      },
+      headers: { Authorization: `Bearer ${token}` },
     });
-    expect(res.status).toBe(400);
+    expect(res.status).toBe(401);
     const body = await res.json();
-    expect(body.error).toMatch(/X-Platform/);
+    expect(body.message).toMatch(/org_id/);
   });
 
-  it("returns 400 when X-Org-Id header is missing and no org_id in token", async () => {
-    const token = makeToken({ sub: "user-1" });
+  it("returns 401 when role claim is missing", async () => {
+    const token = await makeToken({ sub: "user-1", org_id: "org-1", type: "session" });
     const res = await app.request("/test", {
-      headers: {
-        Authorization: `Bearer ${token}`,
-        "X-Platform": "paidedge",
-      },
+      headers: { Authorization: `Bearer ${token}` },
     });
-    expect(res.status).toBe(400);
+    expect(res.status).toBe(401);
     const body = await res.json();
-    expect(body.error).toMatch(/X-Org-Id/);
+    expect(body.message).toMatch(/role/);
   });
 
-  it("passes with valid JWT and required headers", async () => {
-    const token = makeToken({ sub: "user-1", email: "user@test.com" });
+  it("returns 401 for unsupported token type", async () => {
+    const token = await makeToken({
+      sub: "user-1",
+      org_id: "org-1",
+      role: "admin",
+      type: "refresh",
+    });
+    const res = await app.request("/test", {
+      headers: { Authorization: `Bearer ${token}` },
+    });
+    expect(res.status).toBe(401);
+    const body = await res.json();
+    expect(body.message).toMatch(/Unsupported token type/);
+  });
+
+  it("passes with valid session token", async () => {
+    const token = await makeToken({
+      sub: "user-1",
+      org_id: "org-1",
+      role: "admin",
+      type: "session",
+    });
     const res = await app.request("/test", {
       headers: {
         Authorization: `Bearer ${token}`,
-        "X-Platform": "paidedge",
-        "X-Org-Id": "org-1",
         "X-Client-Id": "client-1",
       },
     });
@@ -140,50 +181,70 @@ describe("auth middleware", () => {
     expect(body).toEqual({
       userId: "user-1",
       orgId: "org-1",
+      role: "admin",
+      tokenType: "session",
       clientId: "client-1",
-      platform: "paidedge",
-      email: "user@test.com",
     });
   });
 
-  it("uses org_id from JWT claims when X-Org-Id header is absent", async () => {
-    const token = makeToken({ sub: "user-1", org_id: "org-from-jwt" });
+  it("passes with valid m2m token", async () => {
+    const token = await makeToken({
+      sub: "service-1",
+      org_id: "org-1",
+      role: "service",
+      type: "m2m",
+    });
     const res = await app.request("/test", {
-      headers: {
-        Authorization: `Bearer ${token}`,
-        "X-Platform": "outboundhq",
-      },
+      headers: { Authorization: `Bearer ${token}` },
     });
     expect(res.status).toBe(200);
     const body = await res.json();
-    expect(body.orgId).toBe("org-from-jwt");
+    expect(body.tokenType).toBe("m2m");
   });
 
   it("sets clientId to null when X-Client-Id is absent", async () => {
-    const token = makeToken({ sub: "user-1" });
+    const token = await makeToken({
+      sub: "user-1",
+      org_id: "org-1",
+      role: "admin",
+      type: "session",
+    });
     const res = await app.request("/test", {
-      headers: {
-        Authorization: `Bearer ${token}`,
-        "X-Platform": "paidedge",
-        "X-Org-Id": "org-1",
-      },
+      headers: { Authorization: `Bearer ${token}` },
     });
     expect(res.status).toBe(200);
     const body = await res.json();
     expect(body.clientId).toBeNull();
   });
 
-  it("does not include email when not in JWT claims", async () => {
-    const token = makeToken({ sub: "user-1" });
+  it("ignores X-Org-Id header — org comes from JWT only", async () => {
+    const token = await makeToken({
+      sub: "user-1",
+      org_id: "org-A",
+      role: "admin",
+      type: "session",
+    });
     const res = await app.request("/test", {
       headers: {
         Authorization: `Bearer ${token}`,
-        "X-Platform": "paidedge",
-        "X-Org-Id": "org-1",
+        "X-Org-Id": "org-B",
       },
     });
     expect(res.status).toBe(200);
     const body = await res.json();
-    expect(body.email).toBeUndefined();
+    expect(body.orgId).toBe("org-A");
+  });
+
+  it("returns expired message for expired tokens", async () => {
+    const token = await makeToken(
+      { sub: "user-1", org_id: "org-1", role: "admin", type: "session" },
+      { expiresIn: "-1s" }
+    );
+    const res = await app.request("/test", {
+      headers: { Authorization: `Bearer ${token}` },
+    });
+    expect(res.status).toBe(401);
+    const body = await res.json();
+    expect(body.message).toMatch(/expired/i);
   });
 });
