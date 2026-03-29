@@ -8,14 +8,14 @@ import { logger } from "./logger.js";
 import { requestId } from "./middleware/request-id.js";
 import { corsMiddleware } from "./middleware/cors.js";
 import { errorHandler } from "./middleware/error-handler.js";
-import { authMiddleware, type ChatContext } from "./middleware/auth.js";
+import { authMiddleware, type AuthContext } from "./middleware/auth.js";
 import { healthRoutes } from "./routes/health.js";
 
 // Type augmentation for Hono context
 declare module "hono" {
   interface ContextVariableMap {
     requestId: string;
-    chatContext: ChatContext;
+    auth: AuthContext;
   }
 }
 
