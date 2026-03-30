@@ -5,7 +5,7 @@ import { createMiddleware } from "hono/factory";
 import { config } from "../config.js";
 
 const ALLOWED_HEADERS =
-  "Authorization, X-Platform, X-Org-Id, X-Client-Id, Content-Type";
+  "Authorization, X-Platform, X-Client-Id, Content-Type";
 const ALLOWED_METHODS = "GET, POST, PUT, DELETE, OPTIONS";
 
 export const corsMiddleware = createMiddleware(async (c, next) => {

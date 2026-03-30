@@ -48,7 +48,9 @@ function buildConfig() {
     }),
 
     auth: Object.freeze({
-      jwtSecret: optional("JWT_SECRET"),
+      jwksUrl: required("AUTH_JWKS_URL"),
+      issuer: required("AUTH_ISSUER"),
+      audience: required("AUTH_AUDIENCE"),
     }),
 
     cors: Object.freeze({
